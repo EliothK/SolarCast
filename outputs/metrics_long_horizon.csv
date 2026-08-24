@@ -1,0 +1,8 @@
+Horizon,Model,MAE (Wh/m^2),RMSE (Wh/m^2),R^2,MAPE (%)
+7d ahead,XGBoost (daily),1026.6,1376.3,0.6507,54.1
+14d ahead,XGBoost (daily),988.0,1322.6,0.677,53.11
+4w (28d),Prophet (daily),970.8,1399.5,0.641,54.49
+8w (56d),Prophet (daily),946.9,1338.0,0.667,53.39
+12w (84d),Prophet (daily),948.8,1326.8,0.6794,52.68
+24w (168d),Prophet (daily),984.1,1449.3,0.6424,52.52
+48w (336d),Prophet (daily),917.7,1383.6,0.6937,43.68

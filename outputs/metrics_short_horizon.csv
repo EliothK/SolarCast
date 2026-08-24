@@ -1,0 +1,7 @@
+Horizon,Model,MAE (W/m^2),RMSE (W/m^2),R^2,MAPE (%)
+6h ahead,LSTM,44.41,90.68,0.8637,75.96
+6h ahead,XGBoost,44.64,88.14,0.8712,72.85
+6h ahead,Prophet,89.52,158.61,0.5829,135.2
+12h ahead,LSTM,47.71,98.02,0.8404,80.42
+12h ahead,XGBoost,47.63,93.4,0.8551,77.44
+12h ahead,Prophet,86.75,153.96,0.6067,134.83
