@@ -59,12 +59,6 @@ ____
 **Install all dependencies:**
 
 ```bash
-pip install tensorflow xgboost prophet scikit-learn pandas numpy requests joblib python-dotenv nbformat jupyter matplotlib optuna keras-tuner pvlib
-```
-
-Or use the provided requirements file if available:
-
-```bash
 pip install -r requirements.txt
 ```
 
@@ -86,12 +80,12 @@ The pipeline is tested on:
 ```
 project_root/
 ├── .env    # API keys (create this - not committed to git)
-├── 1_data_acq.ipynb    # Step 1: Download NSRDB historical data
-├── 2_preprocessing.ipynb   # Step 2: Clean, engineer features, scale
-├── 3_modeling.ipynb    # Step 3: Train LSTM, XGBoost, Prophet
-├── 4_evaluation.ipynb  # Step 4: Evaluate models on test set
-├── 5_cross_validation.ipynb    # Step 5: Time-series cross-validation
-├── 6_hyperparameter_tuning.ipynb # Step 6: Tune models with Optuna/KerasTuner
+├── 1.data_acq.ipynb    # Step 1: Download NSRDB historical data
+├── 2.preprocessing.ipynb   # Step 2: Clean, engineer features, scale
+├── 3.modeling.ipynb    # Step 3: Train LSTM, XGBoost, Prophet
+├── 4.evaluation.ipynb  # Step 4: Evaluate models on test set
+├── 5.cross_validation.ipynb    # Step 5: Time-series cross-validation
+├── 6.hyperparameter_tuning.ipynb # Step 6: Tune models with Optuna/KerasTuner
 ├── predict_today.py    # Live inference script
 ├── run_pipeline.py # One-command pipeline runner
 ├── utils.py    # Shared constants and helper functions
@@ -121,7 +115,7 @@ source solar_env/bin/activate   # macOS/Linux
 # solar_env\Scripts\activate    # Windows
 
 # Install dependencies
-pip install tensorflow xgboost prophet scikit-learn pandas numpy requests joblib python-dotenv nbformat jupyter matplotlib optuna keras-tuner pvlib
+pip install -r requirements.txt
 ```
 
 **2. Add your API credentials**
@@ -192,12 +186,12 @@ jupyter lab
 
 | Notebook | What it does | Key outputs |
 |---|---|---|
-| `1_data_acq.ipynb` | Downloads hourly NSRDB data (2015–2024) via NRL API | `data/nsrdb_raw.csv` |
-| `2_preprocessing.ipynb` | Cleans data, engineers cyclical features, fits and applies MinMaxScaler, splits train/val/test | `data/nsrdb_preprocessed.csv`, `data/training_scaled.csv`, `data/val_scaled.csv`, `data/test_scaled.csv`, `artifacts/minmax_scaler.pkl` |
-| `3_modeling.ipynb` | Trains LSTM (short-horizon), XGBoost (short/medium/long horizons), and Prophet models | `artifacts/lstm_best.keras`, `artifacts/xgb_models.pkl`, `artifacts/prophet_h6.pkl`, `artifacts/prophet_h12.pkl` |
-| `4_evaluation.ipynb` | Computes MAE, RMSE, R^2, MAPE on the held-out test set; produces residual and actual-vs-predicted plots | `outputs/` (evaluation charts) |
-| `5_cross_validation.ipynb` | Time-series cross-validation (5-fold) for XGBoost and LSTM | `outputs/` (CV results) |
-| `6_hyperparameter_tuning.ipynb` | Optuna (XGBoost), Keras Tuner (LSTM), grid search (Prophet) | `artifacts/xgb_tuned_models.pkl`, `artifacts/lstm_tuned.keras`, `artifacts/prophet_tuned_h*.pkl` |
+| `1.data_acq.ipynb` | Downloads hourly NSRDB data (2015–2024) via NRL API | `data/nsrdb_raw.csv` |
+| `2.preprocessing.ipynb` | Cleans data, engineers cyclical features, fits and applies MinMaxScaler, splits train/val/test | `data/nsrdb_preprocessed.csv`, `data/training_scaled.csv`, `data/val_scaled.csv`, `data/test_scaled.csv`, `artifacts/minmax_scaler.pkl` |
+| `3.modeling.ipynb` | Trains LSTM (short-horizon), XGBoost (short/medium/long horizons), and Prophet models | `artifacts/lstm_best.keras`, `artifacts/xgb_models.pkl`, `artifacts/prophet_h6.pkl`, `artifacts/prophet_h12.pkl` |
+| `4.evaluation.ipynb` | Computes MAE, RMSE, R^2, MAPE on the held-out test set; produces residual and actual-vs-predicted plots | `outputs/` (evaluation charts) |
+| `5.cross_validation.ipynb` | Time-series cross-validation (5-fold) for XGBoost and LSTM | `outputs/` (CV results) |
+| `6.hyperparameter_tuning.ipynb` | Optuna (XGBoost), Keras Tuner (LSTM), grid search (Prophet) | `artifacts/xgb_tuned_models.pkl`, `artifacts/lstm_tuned.keras`, `artifacts/prophet_tuned_h*.pkl` |
 
 > Each notebook has a **CONFIGURATION cell at the top** (cell 0). If you change the data or output paths in notebook 1, update the matching paths in notebooks 2–6 to stay consistent.
 
@@ -205,7 +199,7 @@ jupyter lab
 
 ### Predict today's GHI (`predict_today.py`)
 
-After the pipeline completes and artifacts are saved, run live inference for any location. No NRL API key is needed - live weather is fetched from Open-Meteo for free.
+After the pipeline completes and artifacts are saved, run live inference for that location. Models are site-specific: to predict for a new city, run `run_pipeline.py` with its `--lat/--lon` first. No NRL API key is needed - live weather is fetched from Open-Meteo for free.
 
 **Basic usage (Bismarck, ND default):**
 
@@ -215,7 +209,10 @@ python predict_today.py
 
 **Custom location and model:**
 
+Train for the site first; `predict_today.py` then finds its models in `locations/<site>/artifacts/` automatically:
+
 ```bash
+python run_pipeline.py --lat 40.7128 --lon -74.0060 --skip-tuning
 python predict_today.py --lat 40.7128 --lon -74.0060 --model xgboost --horizon 6
 ```
 
@@ -233,7 +230,8 @@ python predict_today.py --lat 40.7128 --lon -74.0060 --model all --horizon 12
 | `--lon` | `-100.83192` | Site longitude |
 | `--model` | `xgboost` | Model to use: `xgboost`, `lstm`, `prophet`, or `all` |
 | `--horizon` | `6` | Forecast horizon: `6` or `12` hours ahead |
-| `--artifacts-dir` | `artifacts/` | Path to trained models and scalers |
+| `--artifacts-dir` | auto | Path to trained models and scalers. Defaults to `artifacts/` for Bismarck and `locations/<site>/artifacts/` (where `run_pipeline.py` writes them) for other sites |
+| `--allow-site-mismatch` | off | Run even if the artifacts were trained for a different location (by default the script refuses) |
 | `--albedo` | `0.20` | Surface albedo (0–1). Open-Meteo does not provide this; supply a site-specific value for better accuracy |
 
 **Example output:**
@@ -247,7 +245,7 @@ Model(s): all
 Fetching weather data from Open-Meteo
 96 hourly rows (2025-06-13 00:00 > 2025-06-15 23:00)
 Computing solar zenith angle
-Engineering features (via utils.py < 2_preprocessing.ipynb)
+Engineering features (via utils.py < 2.preprocessing.ipynb)
 
 Last observed: 2025-06-15 10:00
 Predicting at: 2025-06-15 16:00 (+6h)

@@ -2,34 +2,49 @@ import sys
 import numpy as np
 import pandas as pd
 
+from pathlib import Path
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-# Ordered feature list as produced by 2_preprocessing.ipynb after column standardisation and feature engineering.
+# Default site (Bismarck, ND) - its artifacts live in the project root artifacts/
+DEFAULT_LAT = 46.69115
+DEFAULT_LON = -100.83192
+
+def location_dir(lat: float, lon: float) -> Path:
+    # Output directory run_pipeline.py uses for non-default sites
+    # 34.05, -118.25 > locations/34p0500_W118p2500
+    # -33.87, 151.21 > locations/S33p8700_151p2100
+    def fmt(val: float, neg_prefix: str) -> str:
+        prefix = neg_prefix if val < 0 else ""
+        return f"{prefix}{abs(val):.4f}".replace(".", "p")
+
+    return Path("locations") / f"{fmt(lat, 'S')}_{fmt(lon, 'W')}"
+
+# Ordered feature list as produced by 2.preprocessing.ipynb after column standardisation and feature engineering.
 # The MinMaxScaler in artifacts/minmax_scaler.pkl was fitted on data in exactly this order.
 FEATURE_ORDER = [
     "ghi", "dni", "dhi", "temperature", "relative_humidity", "dew_point", "wind_speed", "wind_direction", "surface_albedo",
     "solar_zenith_angle", "hour_sin", "hour_cos", "doy_sin", "doy_cos", "month_sin", "month_cos", "is_daytime",
 ]
 
-# Forecast horizons (3_modeling.ipynb CONFIGURATION cell)
+# Forecast horizons (3.modeling.ipynb CONFIGURATION cell)
 WINDOW_SIZE = 24 # hours - used by LSTM and short horizon XGBoost
 DAILY_WINDOW = 30 # days - used by medium horizon XGBoost
 
-# Forecast horizons (3_modeling.ipynb CONFIGURATION cell)
+# Forecast horizons (3.modeling.ipynb CONFIGURATION cell)
 SHORT_HORIZONS = [6, 12]    # hours
 MEDIUM_HORIZONS = [7, 14]   # days
 LONG_HORIZONS = [28, 56, 84, 168, 336]  # days
 
-# Regressors passed to Prophet (3_modeling.ipynb)
+# Regressors passed to Prophet (3.modeling.ipynb)
 PROPHET_REGRESSORS = ["temperature", "relative_humidity", "wind_speed", "solar_zenith_angle", "surface_albedo",]
 
-# LSTM architecture (3_modeling.ipynb CONFIGURATION cell)
+# LSTM architecture (3.modeling.ipynb CONFIGURATION cell)
 LSTM_UNITS_1 = 128
 LSTM_UNITS_2 = 64
 DROPOUT_RATE = 0.2
 DENSE_UNITS = 32
 
-# Feature engineering (source: 2_preprocessing.ipynb)
+# Feature engineering (source: 2.preprocessing.ipynb)
 def engineer_features(df: pd.DataFrame, albedo: float = 0.20) -> pd.DataFrame:
     df = df.copy()
 
@@ -46,7 +61,7 @@ def engineer_features(df: pd.DataFrame, albedo: float = 0.20) -> pd.DataFrame:
 
     return df
 
-# Sliding window sequence builder (source: 3_modeling.ipynb)
+# Sliding window sequence builder (source: 3.modeling.ipynb)
 def build_sequences(data: np.ndarray, window: int, horizons: list, tgt_idx: int,) -> tuple[np.ndarray, dict]:
     X, ys = [], {h: [] for h in horizons}
     max_h = max(horizons)
@@ -66,7 +81,7 @@ def build_latest_window(df_scaled: pd.DataFrame, window: int = WINDOW_SIZE) -> n
         sys.exit(f"Need at least {window} rows to build the input window; only {len(arr)} rows available.")
     return arr[-window:, :].reshape(1, window, -1)
 
-# Inverse transform (source: 4_evaluation.ipynb - inverse_ghi/regression_metrics)
+# Inverse transform (source: 4.evaluation.ipynb - inverse_ghi/regression_metrics)
 def inverse_ghi(scaled_arr: np.ndarray, scaler, feature_cols: list = FEATURE_ORDER) -> np.ndarray:
     tgt_i = feature_cols.index("ghi")
     dummy = np.zeros((len(scaled_arr), len(feature_cols)))

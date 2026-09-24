@@ -1,4 +1,5 @@
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -8,9 +9,7 @@ from pathlib import Path
 
 import nbformat
 
-# CLI
-DEFAULT_LAT = 46.69115
-DEFAULT_LON = -100.83192
+from utils import DEFAULT_LAT, DEFAULT_LON, location_dir
 
 NOTEBOOKS = [
     ("1.data_acq.ipynb", "Step 1 - Data Acquisition"),
@@ -21,28 +20,18 @@ NOTEBOOKS = [
     ("6.hyperparameter_tuning.ipynb", "Step 6 - Hyperparameter Tuning"),
 ]
 
+# CLI
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run the full GHI forecasting pipeline for any location.")
     p.add_argument("--lat", type=float, default=DEFAULT_LAT, help=f"Site latitude (default: {DEFAULT_LAT} - Bismarck, ND)")
     p.add_argument("--lon", type=float, default=DEFAULT_LON, help=f"Site longitude (default: {DEFAULT_LON} - Bismarck, ND)")
     p.add_argument("--years", type=int, nargs="+", default=list(range(2015, 2025)), help="Training years, space-separated (default: 2015 - 2024)")
-    p.add_argument("--skip-data-acq", action="store_true", help="Skip 1_data_acq.ipynb if raw data is already downloaded")
-    p.add_argument("--skip-tuning", action="store_true",help="Skip 6_hyperparameter_tuning.ipynb (can take several hours)")
+    p.add_argument("--skip-data-acq", action="store_true", help="Skip 1.data_acq.ipynb if raw data is already downloaded")
+    p.add_argument("--skip-tuning", action="store_true",help="Skip 6.hyperparameter_tuning.ipynb (can take several hours)")
     p.add_argument("--output-dir", default=None,
         help="Override the output directory for data/, artifacts/, outputs/. Defaults to the project root for Bismarck, or locations/{lat}_{lon}/ for any other site."
     )
     return p.parse_args()
-
-# DIRECTORY NAMING
-def _location_dir(lat: float, lon: float) -> Path:
-    # Convert lat/lon to a filesystem safe directory name
-    # 34.05, -118.25 > locations/34p0500_W118p2500
-    # -33.87, 151.21 > locations/S33p8700_151p2100
-    def fmt(val: float, neg_prefix: str) -> str:
-        prefix = neg_prefix if val < 0 else ""
-        return f"{prefix}{abs(val):.4f}".replace(".", "p")
-
-    return Path("locations") / f"{fmt(lat, 'S')}_{fmt(lon, 'W')}"
 
 # NOTEBOOK PATCHING
 def _temp_nb(nb: nbformat.NotebookNode, original: Path) -> Path:
@@ -112,7 +101,7 @@ def main() -> None:
 
     output_dir = (
         Path(args.output_dir).resolve() if args.output_dir else Path(".").resolve()
-            if is_default else _location_dir(args.lat, args.lon).resolve()
+            if is_default else location_dir(args.lat, args.lon).resolve()
     )
 
     for sub in ("data", "artifacts", "outputs"):
@@ -151,7 +140,7 @@ def main() -> None:
         if not is_default or args.output_dir:
             patched = (
                 _patch_notebook_1(nb_path, args.lat, args.lon, args.years, output_dir)
-                if nb_filename == "1_data_acq.ipynb" else _patch_notebook_paths(nb_path, output_dir)
+                if nb_filename == "1.data_acq.ipynb" else _patch_notebook_paths(nb_path, output_dir)
             )
         else:
             patched = nb_path   # default site - run notebooks as is
@@ -168,6 +157,11 @@ def main() -> None:
 
     # SUMMARY
     if failed is None:
+        # Record which site these artifacts are trained for; predict_today.py checks it
+        # Written only on success so a failed run never relabels older artifacts
+        site = {"lat": args.lat, "lon": args.lon, "years": sorted(args.years)}
+        (output_dir / "artifacts" / "site.json").write_text(json.dumps(site, indent=2))
+
         print("Pipeline complete!")
         print(f"\nArtifacts: {output_dir / 'artifacts'}")
         print(f"Outputs: {output_dir / 'outputs'}")
@@ -175,7 +169,7 @@ def main() -> None:
             print(f"\nSkipped: {', '.join(skipped)}")
         predict_cmd = f"python predict_today.py --lat {args.lat} --lon {args.lon}"
         if not is_default:
-            predict_cmd += f"--artifacts-dir {output_dir / 'artifacts'}"
+            predict_cmd += f" --artifacts-dir {output_dir / 'artifacts'}"
         print(f"\nTo predict today's GHI:\n{predict_cmd}")
     else:
         print(f"Pipeline failed at: {failed}")

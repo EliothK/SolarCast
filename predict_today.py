@@ -1,4 +1,5 @@
 import argparse
+import json
 import sys
 import numpy as np
 import pandas as pd
@@ -8,22 +9,26 @@ import joblib
 from datetime import date
 from pathlib import Path
 
-# All preprocessing and inference helpers come from utils.py, which was extracted from 2_preprocessing.ipynb, 3_modeling.ipynb, and 4_evaluation.ipynb
-from utils import (FEATURE_ORDER, PROPHET_REGRESSORS, WINDOW_SIZE, engineer_features, build_latest_window, inverse_ghi,)
+# All preprocessing and inference helpers come from utils.py, which was extracted from 2.preprocessing.ipynb, 3.modeling.ipynb, and 4.evaluation.ipynb
+from utils import (FEATURE_ORDER, PROPHET_REGRESSORS, WINDOW_SIZE, DEFAULT_LAT, DEFAULT_LON, engineer_features, build_latest_window, inverse_ghi, location_dir,)
+
+# Max distance (degrees lat/lon) between the requested site and the site the models were trained on
+SITE_TOLERANCE_DEG = 0.1
 
 # CLI
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Predict today's GHI at any location using the trained models.")
-    p.add_argument("--lat",  type=float, default=46.69115, help="Site latitude  (default: 46.69115 - Bismarck, ND)")
-    p.add_argument("--lon",  type=float, default=-100.83192, help="Site longitude (default: -100.83192 - Bismarck, ND)")
+    p.add_argument("--lat",  type=float, default=DEFAULT_LAT, help=f"Site latitude  (default: {DEFAULT_LAT} - Bismarck, ND)")
+    p.add_argument("--lon",  type=float, default=DEFAULT_LON, help=f"Site longitude (default: {DEFAULT_LON} - Bismarck, ND)")
     p.add_argument("--model", choices=["lstm", "xgboost", "prophet", "all"], default="xgboost", help="Which model(s) to run (default: xgboost)")
     p.add_argument("--horizon", type=int, choices=[6, 12], default=6, help="Forecast horizon in hours ahead (default: 6)")
-    p.add_argument("--artifacts-dir", default="artifacts", help="Directory containing trained models and scalers (default: artifacts/)")
+    p.add_argument("--artifacts-dir", default=None, help="Directory containing trained models and scalers (default: artifacts/ for Bismarck, locations/<site>/artifacts/ for other sites)")
+    p.add_argument("--allow-site-mismatch", action="store_true", help="Run even if the artifacts were trained for a different location")
     p.add_argument("--albedo", type=float, default=0.20, help="Surface albedo 0–1 (default: 0.20). Open-Meteo does not provide this; supply a site-specific value for better accuracy.")
     return p.parse_args()
 
 # OPEN-METEO DATA FETCH
-# Variable mapping mirrors the NSRDB attributes requested in 1_data_acq.ipynb
+# Variable mapping mirrors the NSRDB attributes requested in 1.data_acq.ipynb
 OPEN_METEO_VARS = (
     "shortwave_radiation," # > ghi
     "direct_normal_irradiance," # > dni
@@ -48,7 +53,7 @@ RENAME_MAP = {
 
 def fetch_open_meteo(lat: float, lon: float) -> pd.DataFrame:
     #Fetch the last 2 days + today from Open-Meteo (free, no API key).
-    #Returns a DataFrame with the same column names as 1_data_acq.ipynb produces after 2_preprocessing.ipynb standardises them.
+    #Returns a DataFrame with the same column names as 1.data_acq.ipynb produces after 2.preprocessing.ipynb standardises them.
     resp = requests.get(
         "https://api.open-meteo.com/v1/forecast",
         params={
@@ -73,7 +78,7 @@ def fetch_open_meteo(lat: float, lon: float) -> pd.DataFrame:
 
 # SOLAR ZENITH (not provided by Open-Meteo; computed here)
 def add_solar_zenith(df: pd.DataFrame, lat: float, lon: float) -> pd.DataFrame:
-    # Compute apparent solar zenith angle and attach it as 'solar_zenith_angle'. 2_preprocessing.ipynb receives this column from NSRDB directly
+    # Compute apparent solar zenith angle and attach it as 'solar_zenith_angle'. 2.preprocessing.ipynb receives this column from NSRDB directly
     # We must derive it here from the site coordinates. Uses pvlib when available; falls back to a simplified astronomical formula.
     try:
         import pvlib
@@ -95,7 +100,7 @@ def add_solar_zenith(df: pd.DataFrame, lat: float, lon: float) -> pd.DataFrame:
 # MODEL INFERENCE
 # Each function loads the artifact saved by the corresponding notebook, runs prediction, and inverse-transforms via inverse_ghi() from utils.py.
 def predict_xgboost(X: np.ndarray, horizon: int, arts: Path, scaler) -> float:
-    #Load xgb_tuned_models.pkl (6_hyperparameter_tuning.ipynb) or xgb_models.pkl (3_modeling.ipynb) and return a W/m^2 prediction.
+    #Load xgb_tuned_models.pkl (6.hyperparameter_tuning.ipynb) or xgb_models.pkl (3.modeling.ipynb) and return a W/m^2 prediction.
     for fname in ("xgb_tuned_models.pkl", "xgb_models.pkl"):
         path = arts / fname
         if path.exists():
@@ -111,7 +116,7 @@ def predict_xgboost(X: np.ndarray, horizon: int, arts: Path, scaler) -> float:
     return float(inverse_ghi(pred_scaled, scaler)[0])
 
 def predict_lstm(X: np.ndarray, horizon: int, arts: Path, scaler) -> float:
-    #Load lstm_tuned.keras (6_hyperparameter_tuning.ipynb) or lstm_best.keras (3_modeling.ipynb) and return a W/m^2 prediction.
+    #Load lstm_tuned.keras (6.hyperparameter_tuning.ipynb) or lstm_best.keras (3.modeling.ipynb) and return a W/m^2 prediction.
     import tensorflow as tf
 
     for fname in ("lstm_tuned.keras", "lstm_best.keras", "lstm_final.keras"):
@@ -127,7 +132,7 @@ def predict_lstm(X: np.ndarray, horizon: int, arts: Path, scaler) -> float:
     return float(inverse_ghi(pred_scaled[:, h_idx], scaler)[0])
 
 def predict_prophet(df_raw: pd.DataFrame, horizon: int, arts: Path) -> float:
-    #Load prophet_tuned_h{n}.pkl (6_hyperparameter_tuning.ipynb) or prophet_h{n}.pkl (3_modeling.ipynb) and return a W/m^2 prediction.
+    #Load prophet_tuned_h{n}.pkl (6.hyperparameter_tuning.ipynb) or prophet_h{n}.pkl (3.modeling.ipynb) and return a W/m^2 prediction.
     for fname in (f"prophet_tuned_h{horizon}.pkl", f"prophet_h{horizon}.pkl"):
         path = arts / fname
         if path.exists():
@@ -141,10 +146,36 @@ def predict_prophet(df_raw: pd.DataFrame, horizon: int, arts: Path) -> float:
     forecast = model.predict(row[["ds"] + PROPHET_REGRESSORS])
     return float(max(0.0, forecast["yhat"].iloc[0]))
 
+# SITE CHECK
+# Models are site-specific: running Bismarck-trained models on another city gives silently wrong forecasts.
+def resolve_artifacts_dir(args: argparse.Namespace) -> Path:
+    if args.artifacts_dir:
+        return Path(args.artifacts_dir)
+    is_default = abs(args.lat - DEFAULT_LAT) < 1e-4 and abs(args.lon - DEFAULT_LON) < 1e-4
+    return Path("artifacts") if is_default else location_dir(args.lat, args.lon) / "artifacts"
+
+def check_site(arts: Path, lat: float, lon: float, allow_mismatch: bool) -> None:
+    site_path = arts / "site.json"
+    if site_path.exists():
+        site = json.loads(site_path.read_text())
+    else:
+        # Artifacts from before site.json existed were all trained on the default site
+        site = {"lat": DEFAULT_LAT, "lon": DEFAULT_LON}
+
+    if abs(site["lat"] - lat) <= SITE_TOLERANCE_DEG and abs(site["lon"] - lon) <= SITE_TOLERANCE_DEG:
+        return
+    msg = (f"Artifacts in {arts} were trained for lat={site['lat']}, lon={site['lon']}, "
+           f"but you asked for lat={lat}, lon={lon}.")
+    if allow_mismatch:
+        print(f"WARNING: {msg} Continuing (--allow-site-mismatch).\n")
+        return
+    sys.exit(f"{msg}\nTrain models for this site first:\npython run_pipeline.py --lat {lat} --lon {lon}\n"
+             "or pass --allow-site-mismatch to use them anyway.")
+
 # MAIN
 def main() -> None:
     args = parse_args()
-    arts = Path(args.artifacts_dir)
+    arts = resolve_artifacts_dir(args)
 
     print(f"Solar GHI Prediction - {date.today().isoformat()}")
     print(f"Location: lat={args.lat}, lon={args.lon}")
@@ -156,8 +187,10 @@ def main() -> None:
     scaler_path = arts / "minmax_scaler.pkl"
     if not scaler_path.exists():
         sys.exit(f"Scaler not found at {scaler_path}.\nRun the pipeline first:\npython run_pipeline.py --lat {args.lat} --lon {args.lon}")
-    # Scaler was saved by 2_preprocessing.ipynb
+    # Scaler was saved by 2.preprocessing.ipynb
     scaler = joblib.load(scaler_path)
+
+    check_site(arts, args.lat, args.lon, args.allow_site_mismatch)
 
     # Fetch and prepare data
     print("Fetching weather data from Open-Meteo")
@@ -167,25 +200,25 @@ def main() -> None:
     print("Computing solar zenith angle")
     df = add_solar_zenith(df, args.lat, args.lon)
 
-    # engineer_features() replicates 2_preprocessing.ipynb feature engineering
-    print("Engineering features (via utils.py < 2_preprocessing.ipynb)")
+    # engineer_features() replicates 2.preprocessing.ipynb feature engineering
+    print("Engineering features (via utils.py < 2.preprocessing.ipynb)")
     df = engineer_features(df, albedo=args.albedo)
 
     # Trim to hours up to the current hour so no future data leaks into the window
     now = (pd.Timestamp.now(tz=df.index.tz) if df.index.tz else pd.Timestamp.now()).floor("h")
     df_past = df[df.index <= now].copy()
 
-    # Scale using the scaler fitted in 2_preprocessing.ipynb (no re-fitting).
+    # Scale using the scaler fitted in 2.preprocessing.ipynb (no re-fitting).
     df_scaled = pd.DataFrame(scaler.transform(df_past[FEATURE_ORDER]), index=df_past.index, columns=FEATURE_ORDER,)
 
-    # build_latest_window() replicates build_sequences() from 3_modeling.ipynb
+    # build_latest_window() replicates build_sequences() from 3.modeling.ipynb
     X = build_latest_window(df_scaled, window=WINDOW_SIZE)
     target_ts = df_past.index[-1] + pd.Timedelta(hours=args.horizon)
 
     print(f"\nLast observed: {df_past.index[-1].strftime('%Y-%m-%d %H:%M')}")
     print(f"Predicting at: {target_ts.strftime('%Y-%m-%d %H:%M')} (+{args.horizon}h)\n")
 
-    # Nighttime guard: if the sun is below the horizon at the target time, GHI is physically zero — no need to run the model.
+    # Nighttime guard: if the sun is below the horizon at the target time, GHI is physically zero, so there's no need to run the model.
     target_df = pd.DataFrame(index=pd.DatetimeIndex([target_ts]))
     target_df = add_solar_zenith(target_df.assign(ghi=0), args.lat, args.lon)
     target_zenith = float(target_df["solar_zenith_angle"].iloc[0])
