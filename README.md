@@ -1,274 +1,208 @@
-
 ## Solar GHI Forecasting Pipeline
 
-This project trains machine learning models (LSTM, XGBooost, and Prophet) to forecast Global Hoirzonltal Irradiance (GHI) at any geographic location using 10 years of historical solar and meteorological data from NRL's National Solar Radiation Database (NSRDB). Once trained, the pipeline runs a prediction script ("predict_today.py") that fetches live weather data from Open-Meteo and outputs a GHI forecast for any horizon (6h or 12h ahead).
+SolarCast forecasts Global Horizontal Irradiance (GHI) 6 to 48 hours ahead at a site, plus daily totals 1 to 48 weeks ahead.
+
+The short-range models (XGBoost and an LSTM, combined in a weighted ensemble) take Open-Meteo weather forecasts and the exact sun position at the target hour, and learn to correct the forecast against NSRDB satellite measurements.
+They predict the clear-sky index (GHI divided by clear-sky GHI), which removes the daily and seasonal cycle the models would otherwise spend their capacity on.
+`predict_today.py` then fetches the live Open-Meteo forecast and prints a GHI forecast for every horizon.
+
+____
+
+## Results (Bismarck, ND)
+
+Test RMSE in W/m^2 on held-out 2024 data, all hours including night (full table with MAE, MSE, R^2, MAPE and bias in `outputs/metrics_short_range.csv`):
+
+| Horizon | Ensemble | Open-Meteo forecast alone | Old model, as run live | Old model, NSRDB inputs |
+|---|---|---|---|---|
+| 6 h | **59.1** | 77.9 | 98.0 | 90.4 |
+| 12 h | **59.4** | 77.9 | 102.6 | 95.8 |
+| 24 h | **58.0** | 60.5 | 82.5 | 75.1 |
+| 48 h | **59.2** | 68.7 | 80.4 | 75.2 |
+
+- "Old model" is the pre-refactor XGBoost (24 h of NSRDB history, no forecast input), retrained on the same years. "As run live" feeds it Open-Meteo data, which is what the old `predict_today.py` did; "NSRDB inputs" is what the old notebooks reported but cannot be had in real time.
+- 24/48 h rows are scored on forecasts really issued 1/2 days earlier (Open-Meteo previous runs, Aug to Dec 2024), so they are not directly comparable with the 6/12 h rows (Dec 2023 to Dec 2024).
+- 6/12 h forecasts come from Open-Meteo's historical-forecast archive, which uses the newest model run for each hour; live 6/12 h forecasts can be a few hours older, so expect somewhat higher live error.
+- The daily and long-range models (7 to 336 days) do no better than a day-of-year climatology baseline; see `outputs/metrics_long_range.csv`.
+
+____
+
+## How it works
+
+- **Inputs:** Open-Meteo hourly data (GHI, DNI, DHI, cloud cover by layer, temperature, humidity, dew point, wind). Training uses Open-Meteo's historical-forecast archive (2018 on) and, for 24/48 h, its previous-runs archive (2024 on), so the models see the same kind of input in training and live.
+- **Truth:** NSRDB hourly GHI, used only as the training target.
+- **Timestamps:** everything is keyed on UTC hour-ending labels. Open-Meteo stamps each hour's mean at the end of the hour; NSRDB stamps it at the half hour, so 10:30 maps to 11:00. Sun position is computed at mid-hour.
+- **Features per sample:** the last 24 h of Open-Meteo data, the forecast for the target hour and its neighbours, and target-hour zenith, clear-sky GHI and solar time.
+- **Splits:** time-ordered 70/15/15 with a 48 h gap at each boundary. For 24/48 h, the 2024 previous-runs data is split in time into extra training rows (weighted x5), a validation slice and the test slice.
+- **Ensemble:** XGBoost and LSTM weighted by inverse validation MSE per horizon (weights in `artifacts/bundle.json`). Prophet is no longer used for 6 to 48 h; it scored 75% worse than XGBoost there.
 
 ____
 
 ## Requirements
 
-### API Keys
-Service | Purpose | Where to get it
-NRL NSRDB | Historical solar data (notebook 1) | https://developer.nlr.gov/signup/
+### API keys
 
-Create a '.env' file in the project root before running anything:
+| Service | Purpose | Where to get it |
+|---|---|---|
+| NRL NSRDB | Historical truth data | https://developer.nlr.gov/signup/ |
+
+Create a `.env` file in the project root:
+
 ```
 NRL_API_KEY=your_nrl_api_key_here
 EMAIL=your_email@example.com
 ```
 
-> `predict_today.py` fetches live forecasts from Open-Meteo, which is free and requires no API key.
-
-____
-
-### Hardware
-Component | Minium | Recommended |
-| CPU | 4 cores | 8+ cores |
-| RAM | 8 GB | 16 GB |
-| GPU | None (CPU training works) | NVIDIA GPU with CUDA 11.8+ (speeds up LSTM training significantly) |
-| Disk | 2 GB free | 5 GB free| 
-
-> Hyperparameter tuning (notebook 6) with Optuna (50 XGBoost trials) and Keras Tuner (20 LSTM trials) is the most resource intensive step. On CPU alone, expect 2-4 hours. A GPU reduces LSTM tuning to under 30 minutes. This step can be skipped with `--skip-tuning`.
-
-____
+Open-Meteo is free and needs no key.
 
 ### Software
 
-**Python version:** 3.11 (required - TensorFlow/Keras compatibility)
-
-**Package manager:** `pip` or `conda`
-
-**Core dependencies:**
-| Package | Purpose |
-| `tensorflow >= 2.13` | LSTM model training and inference |
-| `xgboost >= 2.0` | XGBoost model training and inference |
-| `prophet >= 1.1` | Facebook Prophet time-series model |
-| `scikit-learn >= 1.3` | Preprocessing, metrics, cross-validation |
-| `pandas >= 2.0` | Data manipulation |
-| `numpy >= 1.24` | Numerical operations |
-| `requests >= 2.31` | API calls (NSRDB, Open-Meteo) |
-| `joblib >= 1.3` | Model serialization |
-| `python-dotenv >= 1.0` | Loading `.env` credentials |
-| `nbformat >= 5.9` | Notebook patching in `run_pipeline.py` |
-| `jupyter >= 1.0` | Notebook execution via `nbconvert` |
-| `matplotlib >= 3.7` | Evaluation and CV plots |
-| `optuna >= 3.3` | XGBoost hyperparameter tuning |
-| `keras-tuner >= 1.4` | LSTM hyperparameter tuning |
-| `pvlib >= 0.10` | Solar zenith calculation (optional but recommended) |
-
-**Install all dependencies:**
+Python 3.11 (TensorFlow compatibility).
 
 ```bash
 pip install -r requirements.txt
 ```
 
-> **Prophet note:** Prophet requires `cmdstan` and `pystan`. On some systems you may also need `conda install -c conda-forge prophet` instead of `pip install prophet`.
+> Prophet needs `cmdstan`; if `pip install prophet` fails, use `conda install -c conda-forge prophet`.
 
-----
+### Hardware
 
-### Operating System
+A CPU is enough. An NVIDIA GPU speeds up XGBoost and the LSTM; the full pipeline with tuning takes about 4 minutes on a GTX 1080 Ti once data is downloaded.
 
-The pipeline is tested on:
-- **Linux** (Ubuntu 20.04+) - fully supported
-- **macOS** (12+) - fully supported
-- **Windows 10/11** - supported; use PowerShell or WSL2 for best results
+____
 
-----
-
-## Project Structure
+## Project structure
 
 ```
 project_root/
-├── .env    # API keys (create this - not committed to git)
-├── 1.data_acq.ipynb    # Step 1: Download NSRDB historical data
-├── 2.preprocessing.ipynb   # Step 2: Clean, engineer features, scale
-├── 3.modeling.ipynb    # Step 3: Train LSTM, XGBoost, Prophet
-├── 4.evaluation.ipynb  # Step 4: Evaluate models on test set
-├── 5.cross_validation.ipynb    # Step 5: Time-series cross-validation
-├── 6.hyperparameter_tuning.ipynb # Step 6: Tune models with Optuna/KerasTuner
-├── predict_today.py    # Live inference script
-├── run_pipeline.py # One-command pipeline runner
-├── utils.py    # Shared constants and helper functions
-├── data/   # Auto-created: raw and processed CSVs
-├── artifacts/  # Auto-created: saved models and scalers
-└── outputs/    # Auto-created: plots and evaluation reports
+├── .env                   # API keys (create this; not committed)
+├── run_pipeline.py        # Download data, tune, train, evaluate
+├── predict_today.py       # Live 6-48 h forecast
+├── solarcast/             # All pipeline logic
+│   ├── config.py          # Constants, horizons, paths, site.json
+│   ├── sources.py         # Open-Meteo and NSRDB downloads (cached per year, UTC)
+│   ├── solar.py           # Sun position and clear-sky GHI
+│   ├── features.py        # Feature building and clear-sky index
+│   ├── models.py          # XGBoost, LSTM, ensemble, saved bundle
+│   ├── train.py           # Splits, training, test evaluation
+│   ├── evaluate.py        # Metrics and the old-model baseline
+│   ├── tune.py            # Optuna, Keras Tuner and Prophet grid searches
+│   ├── longrange.py       # Daily XGBoost and Prophet models
+│   ├── predict.py         # Live inference
+│   └── plots.py           # Result charts
+├── notebooks/
+│   ├── results.ipynb      # Plots and tables from the trained models
+│   └── legacy/            # The original six notebooks (superseded, kept for reference)
+├── tests/                 # pytest suite (runs offline)
+├── data/                  # Auto-created: cached downloads (not committed)
+├── artifacts/             # Auto-created: trained models (not committed)
+└── outputs/               # Auto-created: metrics CSVs and plots
 ```
 
-----
+____
 
-## Instructions to Run
+## Instructions to run
 
-### Option A - Full pipeline via `run_pipeline.py` (recommended)
-
-This script patches and executes all six notebooks in order for any location.
-
-**1. Set up your environment**
+**1. Set up the environment**
 
 ```bash
-# Clone the repo and navigate to the project root
 git clone <repo-url>
 cd <project-root>
-
-# Create and activate a Python 3.11 virtual environment
 python3.11 -m venv solar_env
 source solar_env/bin/activate   # macOS/Linux
 # solar_env\Scripts\activate    # Windows
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-**2. Add your API credentials**
-
-```bash
-# Create .env in the project root
-echo "NRL_API_KEY=your_key_here" > .env
-echo "EMAIL=your_email@example.com" >> .env
-```
+**2. Add your API credentials** (see `.env` above)
 
 **3. Run the pipeline**
 
-Default location (Bismarck, ND - the pre-configured site):
-
 ```bash
-python run_pipeline.py
+python run_pipeline.py                                   # Bismarck, ND
+python run_pipeline.py --tune                            # also search hyperparameters for every model (saved and reused)
+python run_pipeline.py --lat 39.7392 --lon -104.9903     # Denver, CO > locations/39p7392_W104p9903/
 ```
-
-Custom location (any lat/lon):
-
-```bash
-python run_pipeline.py --lat 39.7392 --lon -104.9903  #Denver, CO
-```
-
-Skip data acquisition if `data/nsrdb_raw.csv` is already downloaded:
-
-```bash
-python run_pipeline.py --skip-data-acq
-```
-
-Skip hyperparameter tuning to save several hours of compute:
-
-```bash
-python run_pipeline.py --skip-tuning
-```
-
-All options combined:
-
-```bash
-python run_pipeline.py \
-  --lat 34.0522 --lon -118.2437 \
-  --years 2018 2019 2020 2021 2022 2023 2024 \
-  --skip-data-acq \
-  --skip-tuning \
-  --output-dir /path/to/custom/output
-```
-
-**`run_pipeline.py` arguments:**
 
 | Argument | Default | Description |
 |---|---|---|
-| `--lat` | `46.69115` | Site latitude |
-| `--lon` | `-100.83192` | Site longitude |
-| `--years` | `2015–2024` | Training years (space-separated) |
-| `--skip-data-acq` | off | Skip notebook 1 if raw data already exists |
-| `--skip-tuning` | off | Skip notebook 6 (saves 2–4 hours) |
-| `--output-dir` | project root | Override output path for data/, artifacts/, outputs/ |
+| `--lat` / `--lon` | Bismarck, ND | Site coordinates |
+| `--years` | `2018-2024` | Years for the 6-48 h models; include 2024 so 24/48 h get real day-ahead forecasts |
+| `--daily-years` | `2015-2024` | NSRDB years for the daily models |
+| `--tune` | off | Search hyperparameters before training (see below) |
+| `--trials` | `30` | Optuna trials for each XGBoost search |
+| `--lstm-trials` | `10` | Keras Tuner trials for the LSTM (about 1 min each on a GPU) |
+| `--skip-lstm` | off | XGBoost only (faster, no TensorFlow) |
+| `--skip-long-range` | off | Skip the daily models |
+| `--output-dir` | project root or `locations/<site>/` | Where `data/`, `artifacts/` and `outputs/` go |
 
-----
+`--tune` runs four searches, each scored on the validation split, and saves the winners to `artifacts/<name>_params.json`; later runs without `--tune` reuse them:
 
-### Option B - Run notebooks manually (step by step)
+| Model | Search | Saved as | Trial log |
+|---|---|---|---|
+| XGBoost 6-48 h | Optuna (TPE) | `xgb_params.json` | `outputs/tuning_xgb_trials.csv` |
+| LSTM 6-48 h | Keras Tuner random search (layer sizes, dropout, dense units, learning rate, batch size) | `lstm_params.json` | `outputs/tuning_lstm_trials.csv` |
+| XGBoost 7/14 d | Optuna (TPE) | `xgb_daily_params.json` | `outputs/tuning_xgb_daily_trials.csv` |
+| Prophet 4-48 weeks | Grid of 32 combinations, parallel | `prophet_long_params.json` | `outputs/tuning_prophet_long_grid.csv` |
 
-Open and run each notebook in order in Jupyter Lab or VS Code:
+Downloads are cached in `data/raw/`, so re-runs only train. The pipeline prints the test metrics table at the end and writes `artifacts/site.json` recording which site the models belong to.
 
-```bash
-jupyter lab
-```
+**4. Look at the results**
 
-| Notebook | What it does | Key outputs |
-|---|---|---|
-| `1.data_acq.ipynb` | Downloads hourly NSRDB data (2015–2024) via NRL API | `data/nsrdb_raw.csv` |
-| `2.preprocessing.ipynb` | Cleans data, engineers cyclical features, fits and applies MinMaxScaler, splits train/val/test | `data/nsrdb_preprocessed.csv`, `data/training_scaled.csv`, `data/val_scaled.csv`, `data/test_scaled.csv`, `artifacts/minmax_scaler.pkl` |
-| `3.modeling.ipynb` | Trains LSTM (short-horizon), XGBoost (short/medium/long horizons), and Prophet models | `artifacts/lstm_best.keras`, `artifacts/xgb_models.pkl`, `artifacts/prophet_h6.pkl`, `artifacts/prophet_h12.pkl` |
-| `4.evaluation.ipynb` | Computes MAE, RMSE, R^2, MAPE on the held-out test set; produces residual and actual-vs-predicted plots | `outputs/` (evaluation charts) |
-| `5.cross_validation.ipynb` | Time-series cross-validation (5-fold) for XGBoost and LSTM | `outputs/` (CV results) |
-| `6.hyperparameter_tuning.ipynb` | Optuna (XGBoost), Keras Tuner (LSTM), grid search (Prophet) | `artifacts/xgb_tuned_models.pkl`, `artifacts/lstm_tuned.keras`, `artifacts/prophet_tuned_h*.pkl` |
+Open `notebooks/results.ipynb` for plots (`outputs/rmse_by_horizon.png`, `outputs/week_h6.png`, `outputs/week_h48.png`, `outputs/xgb_feature_importance_h6.png`).
 
-> Each notebook has a **CONFIGURATION cell at the top** (cell 0). If you change the data or output paths in notebook 1, update the matching paths in notebooks 2–6 to stay consistent.
-
-----
-
-### Predict today's GHI (`predict_today.py`)
-
-After the pipeline completes and artifacts are saved, run live inference for that location. Models are site-specific: to predict for a new city, run `run_pipeline.py` with its `--lat/--lon` first. No NRL API key is needed - live weather is fetched from Open-Meteo for free.
-
-**Basic usage (Bismarck, ND default):**
+**5. Run the tests**
 
 ```bash
-python predict_today.py
+pytest tests
 ```
 
-**Custom location and model:**
+____
 
-Train for the site first; `predict_today.py` then finds its models in `locations/<site>/artifacts/` automatically:
+### Forecast now (`predict_today.py`)
+
+Models are site-specific: train a site with `run_pipeline.py` before forecasting it.
 
 ```bash
-python run_pipeline.py --lat 40.7128 --lon -74.0060 --skip-tuning
-python predict_today.py --lat 40.7128 --lon -74.0060 --model xgboost --horizon 6
+python predict_today.py                                  # Bismarck, every horizon, all models
+python predict_today.py --model xgboost --horizon 24
+python predict_today.py --lat 40.7128 --lon -74.0060     # after: python run_pipeline.py --lat 40.7128 --lon -74.0060
 ```
-
-**Run all three models and show an ensemble:**
-
-```bash
-python predict_today.py --lat 40.7128 --lon -74.0060 --model all --horizon 12
-```
-
-**`predict_today.py` arguments:**
 
 | Argument | Default | Description |
 |---|---|---|
-| `--lat` | `46.69115` | Site latitude |
-| `--lon` | `-100.83192` | Site longitude |
-| `--model` | `xgboost` | Model to use: `xgboost`, `lstm`, `prophet`, or `all` |
-| `--horizon` | `6` | Forecast horizon: `6` or `12` hours ahead |
-| `--artifacts-dir` | auto | Path to trained models and scalers. Defaults to `artifacts/` for Bismarck and `locations/<site>/artifacts/` (where `run_pipeline.py` writes them) for other sites |
-| `--allow-site-mismatch` | off | Run even if the artifacts were trained for a different location (by default the script refuses) |
-| `--albedo` | `0.20` | Surface albedo (0–1). Open-Meteo does not provide this; supply a site-specific value for better accuracy |
+| `--lat` / `--lon` | Bismarck, ND | Site coordinates |
+| `--model` | `all` | `xgboost`, `lstm`, or `all` (adds the ensemble) |
+| `--horizon` | every horizon | `6`, `12`, `24` or `48` hours ahead |
+| `--artifacts-dir` | auto | Defaults to `artifacts/` for Bismarck and `locations/<site>/artifacts/` for other sites |
+| `--allow-site-mismatch` | off | Run even if the models were trained for a different site (refused by default) |
 
 **Example output:**
 
 ```
-Solar GHI Prediction - 2025-06-15
-Location: lat=40.7128, lon=-74.006
-Horizon: +6 hours
-Model(s): all
+Solar GHI Forecast - 2026-09-24
+Location: lat=46.69115, lon=-100.83192
+Artifacts: artifacts
 
 Fetching weather data from Open-Meteo
-96 hourly rows (2025-06-13 00:00 > 2025-06-15 23:00)
-Computing solar zenith angle
-Engineering features (via utils.py < 2.preprocessing.ipynb)
+Latest complete hour: 2026-09-24 19:00 CDT
 
-Last observed: 2025-06-15 10:00
-Predicting at: 2025-06-15 16:00 (+6h)
-
-XGBOOST       523.4 W/m^2
-LSTM          491.7 W/m^2
-PROPHET       508.2 W/m^2
-
-ENSEMBLE      507.8 W/m^2 (mean of 3 models)
+Horizon  Target time                         XGBoost                 LSTM             Ensemble  Open-Meteo forecast            Clear sky
++6       2026-09-25 01:00      night (GHI = 0 W/m^2)
++12      2026-09-25 07:00      night (GHI = 0 W/m^2)
++24      2026-09-25 19:00                 73.2 W/m^2           55.1 W/m^2           64.6 W/m^2           90.0 W/m^2          109.2 W/m^2
++48      2026-09-26 19:00                111.6 W/m^2          115.3 W/m^2          113.3 W/m^2          124.0 W/m^2          103.6 W/m^2
 ```
 
-> If the target forecast time falls after sunset, the script will print `GHI = 0.0 W/m^2 (nighttime)` and exit without running any model - GHI is physically zero when the sun is below the horizon.
+Values are the mean GHI over the hour ending at the target time, in the site's local time.
 
-----
+____
 
 ## Troubleshooting
 
-**NRL API returns a 429 or 503:** The NSRDB API rate-limits to one request per 10 seconds per key. The data acquisition notebook already includes `time.sleep(10)` between years. If errors persist, re-run notebook 1 - it will pick up where it left off if you save partial results.
+**NSRDB returns HTTP 400 "Data processing failure" or 429/503:** the API is rate-limited (one request per 10 s) and sometimes down. Downloads are cached per year in `data/raw/`, so re-running resumes. If an old local-time `data/nsrdb_raw.csv` from the legacy notebooks exists, it is converted to UTC automatically instead.
 
-**`prophet` installation fails:** Try `conda install -c conda-forge prophet` instead of pip. Prophet depends on `cmdstan`, which pip sometimes fails to build from source on Windows.
+**LSTM crashes with a cuDNN `DoRnnForward` error:** the LSTM is built with `use_cudnn=False` for this reason; if you add LSTM layers, keep that setting.
 
-**TensorFlow not detecting GPU:** Ensure you have CUDA 11.8+ and cuDNN 8.6+ installed and that `nvidia-smi` shows your GPU. See the [TensorFlow GPU guide](https://www.tensorflow.org/install/pip#linux_1).
+**TensorFlow not detecting the GPU:** make sure `nvidia-smi` shows it and follow the [TensorFlow GPU guide](https://www.tensorflow.org/install/pip#linux_1). Everything also runs on CPU.
 
-**`pvlib` not installed:** The `predict_today.py` script will fall back to an approximate astronomical formula for solar zenith angle. Install `pvlib` for better accuracy: `pip install pvlib`.
-
-**Pipeline halts at a notebook:** The error will be printed to the console. Fix the issue in the notebook directly, then re-run `run_pipeline.py` with `--skip-data-acq` to avoid re-downloading data.
+**Forecast for a new city refuses to run:** train that site first with `python run_pipeline.py --lat <lat> --lon <lon>`.
