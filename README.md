@@ -1,5 +1,7 @@
 ## Solar GHI Forecasting Pipeline
 
+[![Tests](https://github.com/EliothK/SolarCast/actions/workflows/tests.yml/badge.svg)](https://github.com/EliothK/SolarCast/actions/workflows/tests.yml)
+
 SolarCast forecasts Global Horizontal Irradiance (GHI) 6 to 48 hours ahead at a site, plus daily totals 1 to 48 weeks ahead.
 
 The short-range models (XGBoost and an LSTM, combined in a weighted ensemble) take Open-Meteo weather forecasts and the exact sun position at the target hour, and learn to correct the forecast against NSRDB satellite measurements.
@@ -93,6 +95,7 @@ project_root/
 │   ├── results.ipynb      # Plots and tables from the trained models
 │   └── legacy/            # The original six notebooks (superseded, kept for reference)
 ├── tests/                 # pytest suite (runs offline)
+├── .github/workflows/     # CI: runs the tests on every push
 ├── data/                  # Auto-created: cached downloads (not committed)
 ├── artifacts/             # Auto-created: trained models (not committed)
 └── outputs/               # Auto-created: metrics CSVs and plots
@@ -155,6 +158,8 @@ Open `notebooks/results.ipynb` for plots (`outputs/rmse_by_horizon.png`, `output
 ```bash
 pytest tests
 ```
+
+The suite runs offline (HTTP is mocked, training runs on CPU) and needs no API keys or downloaded data. GitHub Actions runs it on every push and pull request (`.github/workflows/tests.yml`).
 
 ____
 

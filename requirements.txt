@@ -11,7 +11,10 @@ python-dotenv>=1.0
 matplotlib>=3.7
 optuna>=3.3
 keras-tuner>=1.4
+# Needed at runtime by keras-tuner but not installed by it
+tensorboard>=2.16
 pvlib>=0.10
 h5py>=3.0
 jupyter>=1.0
 pytest>=8.0
+pyyaml>=6.0

@@ -77,7 +77,10 @@ def tune_lstm(ld: LstmData, max_trials: int = 10, workdir: Path | None = None, o
         epochs=C.LSTM_EPOCHS, verbose=0,
         callbacks=[keras.callbacks.EarlyStopping(monitor="val_loss", patience=C.LSTM_PATIENCE, restore_best_weights=True)],
     )
-    trials = tuner.oracle.get_best_trials(num_trials=max_trials)
+    # Keras Tuner records a crashing trial as FAILED instead of raising; don't let that pass as a result
+    trials = [t for t in tuner.oracle.get_best_trials(num_trials=max_trials) if t.score is not None]
+    if not trials:
+        raise RuntimeError("Every Keras Tuner trial failed; see the tracebacks above (a missing package such as tensorboard is a common cause)")
     if outputs is not None:
         pd.DataFrame([{**t.hyperparameters.values, "val_loss": t.score} for t in trials]).to_csv(outputs / "tuning_lstm_trials.csv", index=False)
     best = tuner.get_best_hyperparameters(1)[0].values

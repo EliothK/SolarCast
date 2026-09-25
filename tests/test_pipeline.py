@@ -145,6 +145,22 @@ def test_tune_lstm_returns_full_params(prep, tmp_path, monkeypatch):
     trials = pd.read_csv(tmp_path / "tuning_lstm_trials.csv")
     assert len(trials) == 2 and trials["val_loss"].notna().all()
 
+def test_tune_lstm_raises_when_every_trial_fails(prep, tmp_path, monkeypatch):
+    import solarcast.models as M
+    from solarcast.tune import tune_lstm
+    _, p = prep
+    monkeypatch.setattr(C, "LSTM_EPOCHS", 1)
+    # Keras Tuner builds once while setting up the search space; let that succeed and fail every trial's build
+    real_build, calls = M.build_lstm, []
+    def broken(*a, **k):
+        calls.append(1)
+        if len(calls) > 1:
+            raise ValueError("broken model")
+        return real_build(*a, **k)
+    monkeypatch.setattr(M, "build_lstm", broken)
+    with pytest.raises(RuntimeError, match="Every Keras Tuner trial failed"):
+        tune_lstm(T.lstm_datasets(p), max_trials=2, workdir=tmp_path / "kt")
+
 def test_train_short_range_uses_lstm_params(prep, monkeypatch):
     import solarcast.train as TT
     paths, p = prep
