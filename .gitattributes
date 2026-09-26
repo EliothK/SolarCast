@@ -1,0 +1,3 @@
+# The notebooks are reports and superseded originals (notebooks/legacy), not the code; the pipeline is the solarcast package.
+# Without this, their embedded outputs make GitHub label the whole repo "Jupyter Notebook".
+*.ipynb linguist-documentation
